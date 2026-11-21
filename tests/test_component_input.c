@@ -139,6 +139,95 @@ static void test_tab_then_input(cui_ctx *ui) {
     cui_input_focus(ui, true);
 }
 
+static void test_ctrl_tab_release(cui_ctx *ui) {
+    cui_begin_frame(ui, 0);
+    cui_button(ui, "First");
+    cui_id first = cui_last_id(ui);
+    cui_button(ui, "Second");
+    cui_id second = cui_last_id(ui);
+    cui_end_frame(ui);
+
+    cui_begin_frame(ui, 0);
+    cui_input_event tab = { .kind = CUI_INPUT_KEY, .key = CUI_KEY_TAB, .down = true };
+    cui_dispatch_input(ui, &tab, NULL, NULL);
+    CHECK(cui_focused_id(ui) == first);
+    tab.down = false;
+    cui_dispatch_input(ui, &tab, NULL, NULL);
+
+    tab.mods = CUI_MOD_CTRL;
+    tab.down = true;
+    cui_dispatch_input(ui, &tab, NULL, NULL);
+    tab.down = false;
+    cui_dispatch_input(ui, &tab, NULL, NULL);
+    CHECK(cui_focused_id(ui) == first && cui_key_pressed(ui, CUI_KEY_TAB));
+
+    const cui_input_event ctrl_release = { .kind = CUI_INPUT_KEY, .key = CUI_KEY_NONE };
+    cui_dispatch_input(ui, &ctrl_release, NULL, NULL);
+    CHECK(cui_focused_id(ui) == first && cui_key_pressed(ui, CUI_KEY_TAB));
+
+    const cui_input_event key = { .kind = CUI_INPUT_KEY, .key = CUI_KEY_A, .down = true };
+    cui_dispatch_input(ui, &key, NULL, NULL);
+    CHECK(cui_focused_id(ui) == first && cui_key_pressed(ui, CUI_KEY_A));
+
+    tab.mods = 0;
+    tab.down = true;
+    cui_dispatch_input(ui, &tab, NULL, NULL);
+    CHECK(cui_focused_id(ui) == second);
+    cui_end_frame(ui);
+    cui_input_focus(ui, false);
+    cui_input_focus(ui, true);
+}
+
+static cui_id submit_modal_canvas(cui_ctx *ui, bool show_dialog, bool open_cover) {
+    cui_button(ui, "Page anchor");
+    if (cui_popover_begin(ui, "Page popover", NULL)) {
+        cui_button(ui, "Page popover button");
+        cui_popover_end(ui);
+    }
+    const cui_dialog_opts dialog = { .persistent = true, .no_close_button = true };
+    if (!show_dialog || !cui_dialog_begin(ui, "Dialog", &show_dialog, &dialog)) return 0;
+    const cui_canvas_opts canvas = { .focusable = true, .component_input = true };
+    cui_canvas_ex(ui, "Canvas", CUI_PX(100), CUI_PX(40), NULL, NULL, 0, &canvas);
+    cui_id id = cui_last_id(ui);
+    if (open_cover) cui_popover_open(ui, "Dialog popover");
+    if (cui_popover_begin(ui, "Dialog popover", NULL)) {
+        cui_button(ui, "Dialog popover button");
+        cui_popover_end(ui);
+    }
+    cui_dialog_end(ui);
+    return id;
+}
+
+static void test_modal_canvas_with_popovers(cui_ctx *ui) {
+    cui_begin_frame(ui, 1.0f / 60);
+    cui_popover_open(ui, "Page popover");
+    submit_modal_canvas(ui, false, false);
+    cui_end_frame(ui);
+
+    cui_begin_frame(ui, 1.0f / 60);
+    canvas_route route = { .canvas = submit_modal_canvas(ui, true, false) };
+    cui_request_component_focus(ui, route.canvas);
+    cui_end_frame(ui);
+    CHECK(cui_popover_is_open(ui, "Page popover"));
+    CHECK(route.canvas && cui_focused_id(ui) == route.canvas);
+    CHECK(cui_component_has_input(ui, route.canvas));
+
+    cui_begin_frame(ui, 1.0f / 60);
+    CHECK(cui_component_has_input(ui, route.canvas));
+    const cui_input_event text = { .kind = CUI_INPUT_TEXT, .text = "a" };
+    cui_dispatch_input(ui, &text, route_canvas, &route);
+    CHECK(route.text_calls == 1);
+    submit_modal_canvas(ui, true, true);
+    cui_end_frame(ui);
+    CHECK(cui_focused_id(ui) == route.canvas && !cui_component_has_input(ui, route.canvas));
+
+    cui_begin_frame(ui, 1.0f / 60);
+    CHECK(!cui_component_has_input(ui, route.canvas));
+    cui_dispatch_input(ui, &text, route_canvas, &route);
+    CHECK(route.text_calls == 1);
+    cui_end_frame(ui);
+}
+
 static void platform_cursor(void *user, cui_cursor cursor) {
     *(cui_cursor *)user = cursor;
 }
@@ -172,6 +261,8 @@ int main(void) {
     test_canvas_dispatch(ui);
     test_tab_then_input(ui);
     test_cursor(ui);
+    test_ctrl_tab_release(ui);
+    test_modal_canvas_with_popovers(ui);
     cui_destroy(ui);
     cui_sw_destroy(sw);
     printf("%d component input checks, %d failed\n", checks, failed);

@@ -746,7 +746,7 @@ static void cui__keyboard_tab(cui_ctx *ui, cui_id tab_owner) {
         int *cand = cui__frame_alloc(ui, sizeof *cand * (size_t)ui->prev_focus_count);
         for (int i = 0; i < ui->prev_focus_count; i++) {
             const cui_focus_entry *entry = &ui->prev_focus_order[i];
-            if (ui->prev_modal_layer && entry->layer != ui->prev_modal_layer) continue;
+            if (ui->prev_modal.id && entry->layer != ui->prev_modal.id) continue;
             if (entry->id == ui->focus) cur = n;
             cand[n++] = i;
         }
@@ -780,11 +780,11 @@ bool cui_component_has_input(cui_ctx *ui, cui_id id) {
     if (!id || !ui->window_focused || ui->focus != id || ui->component_input.focus_owner != id) return false;
     int count = ui->in_frame ? ui->prev_focus_count : ui->focus_count;
     const cui_focus_entry *order = ui->in_frame ? ui->prev_focus_order : ui->focus_order;
-    cui_id modal = ui->in_frame ? ui->prev_modal_layer : ui->modal_layer;
+    cui_modal_layer modal = ui->in_frame ? ui->prev_modal : ui->modal;
     for (int i = 0; i < count; i++) if (order[i].id == id && order[i].component_input) {
         cui_id layer = order[i].layer;
-        if (modal && !cui__component_in_modal(ui, layer, modal)) return false;
-        int z = 0;
+        if (modal.id && !cui__component_in_modal(ui, layer, modal.id)) return false;
+        int z = layer == modal.id ? modal.z : 0;
         for (int p = 0; p < ui->popup_count; p++)
             if (ui->popups[p].id == layer) z = ui->popups[p].z;
         for (int p = 0; p < ui->popup_count; p++)
@@ -819,7 +819,9 @@ void cui_dispatch_input(cui_ctx *ui, const cui_input_event *event, cui_input_rou
         if (handled && valid && event->down) ui->component_input.blocked_keys[event->key] = true;
         if (!handled && (!valid || !ui->component_input.blocked_keys[event->key])) {
             cui__key_action(ui, event);
-            cui__keyboard_tab(ui, ui->component_input.previous_tab_owner);
+            /* A later modifier change must not turn an earlier Ctrl+Tab into Tab. */
+            if (event->key == CUI_KEY_TAB && event->down)
+                cui__keyboard_tab(ui, ui->component_input.previous_tab_owner);
         }
     } else if (!handled && event->kind == CUI_INPUT_TEXT) cui_input_text(ui, event->text);
 }
@@ -969,9 +971,8 @@ void cui_begin_frame(cui_ctx *ui, float dt) {
     { cui_focus_entry *t = ui->prev_focus_order; ui->prev_focus_order = ui->focus_order; ui->focus_order = t;
       int c = ui->prev_focus_cap; ui->prev_focus_cap = ui->focus_cap; ui->focus_cap = c;
       ui->prev_focus_count = ui->focus_count; ui->focus_count = 0; }
-    ui->prev_modal_layer = ui->modal_layer;
-    ui->modal_layer = 0;
-    ui->modal_z = 0;
+    ui->prev_modal = ui->modal;
+    ui->modal = (cui_modal_layer){0};
 
     cui__compute_hot(ui);
     if (ui->active && !ui->mdown[0] && !ui->mreleased[0] && !ui->mpressed[0]) ui->active = 0;
