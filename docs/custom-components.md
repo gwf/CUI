@@ -43,6 +43,25 @@ if (c.pressed) level = c.mouse.x / c.rect.w;
 
 The user data is copied (pass `sizeof`), because painting happens at the end of the frame. `cui_canvas_result` has `rect`, `hovered`, `pressed`, `clicked` and `mouse` (relative to the canvas). The canvas clips to its rectangle.
 
+### Keyboard focus
+
+Pass `cui_canvas_ex` the option `.focusable = true` to make the canvas a
+Tab stop. Enter and Space activate it like a button. Set
+`.component_input = true` as well to route keys and committed text through
+[your app's input handler](integration.md#component-input).
+
+```c
+const cui_canvas_opts opts = { .focusable = true, .component_input = true };
+cui_canvas_ex(ui, "map", CUI_FILL, CUI_PX(240), paint_map, &data, sizeof data, &opts);
+if (focus_map) cui_request_component_focus(ui, cui_last_id(ui));
+```
+
+The focus request takes effect at the end of the frame if the target canvas
+was submitted and enabled. Use `cui_focus_visible(ui, id)` in the painter to
+decide when to draw a focus ring. A painter can also use `cui_set_cursor` for
+a resize grip or other hit area. CUI starts each frame with the arrow cursor,
+so request the cursor each frame it applies.
+
 ### Wheel input
 
 A canvas that zooms, pans or scrolls its own drawing takes the wheel in two steps: the paint function marks the part that takes it with `cui_wheel_region`, and the build code takes the wheel aimed there with `cui_wheel_take`. Over the region the wheel stops at the canvas instead of scrolling an enclosing scroll area or the page; everywhere else it scrolls as before.
@@ -109,4 +128,5 @@ Both request new frames while moving and stop when settled, so idle apps stay id
 
 ## Interaction model
 
-For fully custom widgets, use the canvas result or `cui_last_hovered`. Hit testing uses the rectangles from the previous frame and honours overlays: a component under an open dialog or menu never sees the mouse. Keyboard focus, Tab order and the focus ring are handled for built-in components; custom canvases can read keys with `cui_key_pressed` while hovered or after a click, and take the wheel with `cui_wheel_region` and `cui_wheel_take` (see [Wheel input](#wheel-input)).
+For fully custom widgets, use the canvas result or `cui_last_hovered`. Hit testing uses the rectangles from the previous frame and honours overlays: a component under an open dialog or menu never sees the mouse. Built-in components manage their keyboard focus and focus ring. Custom canvases
+can opt into [keyboard focus](#keyboard-focus) and [wheel input](#wheel-input).

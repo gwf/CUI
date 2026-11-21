@@ -429,7 +429,11 @@ typedef struct cui_interact {
     bool keyboard_focused;    /* focused with no popup above this layer */
 } cui_interact;
 
-enum { CUI_IF_FOCUSABLE = 1, CUI_IF_DRAG = 2, CUI_IF_KEEP_FOCUS = 4, CUI_IF_TEXT = 8 };
+enum { CUI_IF_FOCUSABLE = 1, CUI_IF_DRAG = 2, CUI_IF_KEEP_FOCUS = 4, CUI_IF_TEXT = 8, CUI_IF_COMPONENT_INPUT = 16 };
+typedef struct cui_focus_entry {
+    cui_id id, layer;
+    bool component_input;
+} cui_focus_entry;
 cui_interact cui__interact(cui_ctx *ui, cui_id id, int flags);
 void cui__mark_interactive(cui_ctx *ui, int node, int flags);
 void cui__set_cursor(cui_ctx *ui, cui_cursor c);
@@ -439,6 +443,7 @@ bool cui__is_layer_open(cui_ctx *ui, cui_id layer);
 /* ---- popups ---- */
 typedef struct cui_popup {
     cui_id id;
+    cui_id parent_layer;       /* submitting layer, for modal ancestry */
     cui_id anchor;
     cui_rect anchor_rect;
     bool open;
@@ -534,10 +539,8 @@ struct cui_ctx {
     bool focus_visible;             /* focus came from the keyboard */
     cui_id focus_next_request;
     int focus_move;                 /* +1/-1 tab navigation requested */
-    cui_id *focus_order; int focus_count, focus_cap;
-    cui_id *prev_focus_order; int prev_focus_count, prev_focus_cap;
-    cui_id *focus_layers; int focus_layers_cap;          /* layer of each focus entry */
-    cui_id *prev_focus_layers; int prev_focus_layers_cap;
+    cui_focus_entry *focus_order; int focus_count, focus_cap;
+    cui_focus_entry *prev_focus_order; int prev_focus_count, prev_focus_cap;
     cui_id modal_layer, prev_modal_layer;               /* topmost open modal */
     int modal_z;
     bool edit_prev;                                     /* a text field had focus last frame */
@@ -548,6 +551,14 @@ struct cui_ctx {
     cui_cursor cursor;
 
     /* input */
+    struct {
+        cui_input_hook_fn capture;
+        void *user;
+        cui_id focus_request, focus_owner;
+        cui_id previous_tab_owner;     /* built-in editor's Tab owner during replay */
+        bool repeated;
+        bool blocked_keys[CUI_KEY_COUNT];
+    } component_input;
     float mx, my, pmx, pmy;
     bool mouse_inside;
     bool mdown[3], mpressed[3], mreleased[3];

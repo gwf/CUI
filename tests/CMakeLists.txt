@@ -5,6 +5,10 @@ if(WIN32 AND CUI_STB_IMAGE)
 endif()
 add_test(NAME cui_tests COMMAND cui_tests)
 
+add_executable(cui_test_component_input test_component_input.c)
+target_link_libraries(cui_test_component_input PRIVATE cui::cui)
+add_test(NAME cui_test_component_input COMMAND cui_test_component_input)
+
 add_executable(cui_test_file_places test_file_places.c)
 target_link_libraries(cui_test_file_places PRIVATE cui::cui)
 add_test(NAME cui_test_file_places COMMAND cui_test_file_places)

@@ -680,7 +680,7 @@ static void cui__ne_build_canvas(cui_ctx *ui, cui__ne_build *b, const cui_node_e
     cui__mark_interactive(ui, en, CUI_IF_FOCUSABLE);
     b->bg_focus = focus_visible;
     b->editor_node = en;
-    if (hot_mine && b->st->mode == NE_IDLE && ui->kdown[CUI_KEY_SPACE]) cui__set_cursor(ui, CUI_CURSOR_MOVE);
+    if (hot_mine && b->st->mode == NE_IDLE && cui_key_action_down(ui, CUI_KEY_SPACE)) cui__set_cursor(ui, CUI_CURSOR_MOVE);
     cui__open(ui, en);
 }
 
@@ -748,7 +748,7 @@ bool cui_node_editor_begin_ex(cui_ctx *ui, const char *id_str, cui_node_view *vi
     /* pan: the middle button, or Space and drag, anywhere over the canvas */
     bool over = b->has_rect && cui__rect_contains(b->r, mx, my) && ui->hot_layer == ui->current_layer && (hot_mine || ui->hot != 0);
     if (!b->disabled && over && st->mode == NE_IDLE && !ui->edit_prev &&
-        (ui->mpressed[CUI_MOUSE_MIDDLE] || (ui->mpressed[0] && ui->kdown[CUI_KEY_SPACE]))) {
+        (ui->mpressed[CUI_MOUSE_MIDDLE] || (ui->mpressed[0] && cui_key_action_down(ui, CUI_KEY_SPACE)))) {
         st->mode = NE_PAN; st->last_x = mx; st->last_y = my;
         b->consumed = true;
     }

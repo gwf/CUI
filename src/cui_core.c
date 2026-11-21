@@ -255,8 +255,6 @@ void cui_destroy(cui_ctx *ui) {
     cui__free(ui, ui->prev_hits);
     cui__free(ui, ui->focus_order);
     cui__free(ui, ui->prev_focus_order);
-    cui__free(ui, ui->focus_layers);
-    cui__free(ui, ui->prev_focus_layers);
     cui__free(ui, ui->dl.vtx);
     cui__free(ui, ui->dl.idx);
     cui__free(ui, ui->dl.cmd);
@@ -481,12 +479,29 @@ void cui_pop_disabled(cui_ctx *ui) {
 
 static void cui__poke(cui_ctx *ui) { ui->settle_frames = CUI_MAX(ui->settle_frames, 2); ui->input_this_frame = true; }
 
+void cui_set_input_hook(cui_ctx *ui, cui_input_hook_fn hook, void *user) {
+    ui->component_input.capture = hook;
+    ui->component_input.user = hook ? user : NULL;
+}
+static bool cui__input_handled(cui_ctx *ui, const cui_input_event *event) {
+    if (!ui->component_input.capture || !ui->component_input.capture(ui, event, ui->component_input.user)) return false;
+    cui__poke(ui);
+    return true;
+}
 void cui_input_mouse_move(cui_ctx *ui, float x, float y) {
+    const cui_input_event event = { .kind = CUI_INPUT_MOUSE_MOVE, .position = {x, y} };
+    if (cui__input_handled(ui, &event)) return;
     if (x != ui->mx || y != ui->my || !ui->mouse_inside) cui__poke(ui);
     ui->mx = x; ui->my = y; ui->mouse_inside = true;
 }
 
-void cui_input_mouse_leave(cui_ctx *ui) { ui->mouse_inside = false; ui->mx = -1e6f; ui->my = -1e6f; cui__poke(ui); }
+void cui_input_mouse_leave(cui_ctx *ui) {
+    const cui_input_event event = { .kind = CUI_INPUT_MOUSE_LEAVE };
+    if (cui__input_handled(ui, &event)) return;
+    ui->mouse_inside = false;
+    ui->mx = ui->my = -1e6f;
+    cui__poke(ui);
+}
 
 /** Classify pending presses against the current frame's clock, including batched clicks. */
 static void cui__flush_clicks(cui_ctx *ui) {
@@ -505,6 +520,8 @@ static void cui__flush_clicks(cui_ctx *ui) {
 
 void cui_input_mouse_button(cui_ctx *ui, cui_mouse_button b, bool down) {
     if ((int)b < 0 || (int)b > 2) return;
+    const cui_input_event event = { .kind = CUI_INPUT_MOUSE_BUTTON, .button = b, .down = down };
+    if (cui__input_handled(ui, &event)) return;
     cui__poke(ui);
     if (down && !ui->mdown[b]) {
         ui->mpressed[b] = true;
@@ -533,16 +550,37 @@ void cui_input_mouse_button(cui_ctx *ui, cui_mouse_button b, bool down) {
     ui->mdown[b] = down;
 }
 
-void cui_input_scroll(cui_ctx *ui, float dx, float dy) { ui->scroll_dx += dx; ui->scroll_dy += dy; cui__poke(ui); }
-
-void cui_input_key(cui_ctx *ui, cui_key key, bool down, int mods) {
-    /* modifiers are sampled at key presses (and modifier-only changes), so a
-     * quick shortcut tap released before the next frame still registers */
-    if (down || key == CUI_KEY_NONE) ui->mods = mods;
+void cui_input_scroll(cui_ctx *ui, float dx, float dy) {
+    const cui_input_event event = { .kind = CUI_INPUT_SCROLL, .delta = {dx, dy} };
+    if (cui__input_handled(ui, &event)) return;
+    ui->scroll_dx += dx;
+    ui->scroll_dy += dy;
     cui__poke(ui);
-    if ((int)key <= 0 || key >= CUI_KEY_COUNT) return;
-    if (down && ui->kpressed[key] < 255) ui->kpressed[key]++;
-    ui->kdown[key] = down;
+}
+
+static bool cui__key_state(cui_ctx *ui, const cui_input_event *event) {
+    bool valid = event->key > 0 && event->key < CUI_KEY_COUNT;
+    bool repeat = valid && event->down && ui->kdown[event->key];
+    ui->mods = event->mods;
+    if (valid) {
+        ui->kdown[event->key] = event->down;
+        if (!event->down) ui->component_input.blocked_keys[event->key] = false;
+    }
+    cui__poke(ui);
+    return repeat;
+}
+static void cui__key_action(cui_ctx *ui, const cui_input_event *event) {
+    if (event->key > 0 && event->key < CUI_KEY_COUNT && event->down && ui->kpressed[event->key] < 255)
+        ui->kpressed[event->key]++;
+}
+void cui_input_key(cui_ctx *ui, cui_key key, bool down, int mods) {
+    const cui_input_event event = { .kind = CUI_INPUT_KEY, .key = key, .down = down, .mods = mods };
+    if (cui__input_handled(ui, &event)) return;
+    /* Keep legacy modifier sampling unchanged outside opt-in dispatch. */
+    int previous_mods = ui->mods;
+    cui__key_state(ui, &event);
+    if (!down && key != CUI_KEY_NONE) ui->mods = previous_mods;
+    cui__key_action(ui, &event);
 }
 
 void cui_input_file_hover(cui_ctx *ui, bool hovering, float x, float y) {
@@ -582,6 +620,8 @@ bool cui_file_drag_active(cui_ctx *ui) { return ui->drag_hover; }
 
 void cui_input_text(cui_ctx *ui, const char *utf8) {
     if (!utf8) return;
+    const cui_input_event event = { .kind = CUI_INPUT_TEXT, .text = utf8 };
+    if (cui__input_handled(ui, &event)) return;
     int n = (int)strlen(utf8);
     if (ui->text_in_len + n >= (int)sizeof(ui->text_in)) return;
     /* drop control characters; keys handle those */
@@ -595,9 +635,12 @@ void cui_input_text(cui_ctx *ui, const char *utf8) {
 }
 
 void cui_input_focus(cui_ctx *ui, bool focused) {
+    const cui_input_event event = { .kind = CUI_INPUT_FOCUS, .focused = focused };
+    if (cui__input_handled(ui, &event)) return;
     ui->window_focused = focused;
     if (!focused) {
         memset(ui->kdown, 0, sizeof ui->kdown);
+        memset(ui->component_input.blocked_keys, 0, sizeof ui->component_input.blocked_keys);
         /* a held left button counts as released where the pointer was last seen */
         if (ui->mdown[CUI_MOUSE_LEFT]) { ui->release_x = ui->mx; ui->release_y = ui->my; }
         for (int i = 0; i < 3; i++) { if (ui->mdown[i]) ui->mreleased[i] = true; ui->mdown[i] = false; }
@@ -629,6 +672,9 @@ bool cui_wants_keyboard(cui_ctx *ui) { return ui->edit != NULL; }
 bool cui_wants_mouse(cui_ctx *ui) { return ui->hot != 0 || ui->active != 0; }
 
 void cui__set_cursor(cui_ctx *ui, cui_cursor c) { ui->cursor = c; }
+void cui_set_cursor(cui_ctx *ui, cui_cursor c) {
+    if ((int)c >= 0 && c < CUI_CURSOR_COUNT) cui__set_cursor(ui, c);
+}
 
 /* ------------------------------------------------------------------------ */
 /* Interaction                                                              */
@@ -693,6 +739,91 @@ static void cui__compute_hot(cui_ctx *ui) {
     }
 }
 
+static void cui__keyboard_tab(cui_ctx *ui, cui_id tab_owner) {
+    bool tab_kept = tab_owner && tab_owner == ui->focus;   /* a code editor types the Tab */
+    if (cui_key_pressed(ui, CUI_KEY_TAB) && !(ui->mods & CUI_MOD_CTRL) && ui->prev_focus_count > 0 && !tab_kept) {
+        int n = 0, cur = -1;
+        int *cand = cui__frame_alloc(ui, sizeof *cand * (size_t)ui->prev_focus_count);
+        for (int i = 0; i < ui->prev_focus_count; i++) {
+            const cui_focus_entry *entry = &ui->prev_focus_order[i];
+            if (ui->prev_modal_layer && entry->layer != ui->prev_modal_layer) continue;
+            if (entry->id == ui->focus) cur = n;
+            cand[n++] = i;
+        }
+        if (n > 0) {
+            int dir = (ui->mods & CUI_MOD_SHIFT) ? -1 : 1;
+            int idx = cur < 0 ? (dir > 0 ? 0 : n - 1) : (cur + dir + n) % n;
+            const cui_focus_entry *entry = &ui->prev_focus_order[cand[idx]];
+            ui->focus = entry->id;
+            ui->component_input.focus_owner = entry->component_input ? entry->id : 0;
+            ui->focus_visible = true;
+        }
+        ui->kpressed[CUI_KEY_TAB] = 0;
+    }
+}
+
+/* Component requests commit against the complete submission. The routing
+ * query is used after end_frame or before components in the next frame. */
+void cui_request_component_focus(cui_ctx *ui, cui_id id) { ui->component_input.focus_request = id; }
+/* A popup submitted inside a modal belongs to that modal's input scope. */
+static bool cui__component_in_modal(cui_ctx *ui, cui_id layer, cui_id modal) {
+    for (int depth = 0; depth <= ui->popup_count; depth++) {
+        if (layer == modal) return true;
+        cui_popup *popup = cui__popup_get(ui, layer, false);
+        if (!popup || !popup->open) return false;
+        layer = popup->parent_layer;
+    }
+    return false;
+}
+
+bool cui_component_has_input(cui_ctx *ui, cui_id id) {
+    if (!id || !ui->window_focused || ui->focus != id || ui->component_input.focus_owner != id) return false;
+    int count = ui->in_frame ? ui->prev_focus_count : ui->focus_count;
+    const cui_focus_entry *order = ui->in_frame ? ui->prev_focus_order : ui->focus_order;
+    cui_id modal = ui->in_frame ? ui->prev_modal_layer : ui->modal_layer;
+    for (int i = 0; i < count; i++) if (order[i].id == id && order[i].component_input) {
+        cui_id layer = order[i].layer;
+        if (modal && !cui__component_in_modal(ui, layer, modal)) return false;
+        int z = 0;
+        for (int p = 0; p < ui->popup_count; p++)
+            if (ui->popups[p].id == layer) z = ui->popups[p].z;
+        for (int p = 0; p < ui->popup_count; p++)
+            if (ui->popups[p].open && ui->popups[p].z > z) return false;
+        return true;
+    }
+    return false;
+}
+
+bool cui_input_repeated(cui_ctx *ui) { return ui->component_input.repeated; }
+bool cui_window_focused(cui_ctx *ui) { return ui->window_focused; }
+bool cui_key_action_down(cui_ctx *ui, cui_key key) {
+    return cui_key_down(ui, key) && !ui->component_input.blocked_keys[key];
+}
+cui_id cui_focused_id(cui_ctx *ui) { return ui->focus; }
+void cui_dispatch_input(cui_ctx *ui, const cui_input_event *event, cui_input_route_fn route, void *user) {
+    ui->component_input.repeated = false;
+    if (event->kind == CUI_INPUT_FOCUS) {
+        cui_input_focus(ui, event->focused);
+        if (route) route(ui, user, event); /* lifecycle only */
+        return;
+    }
+    if (event->kind == CUI_INPUT_KEY) ui->component_input.repeated = cui__key_state(ui, event);
+    if (!ui->window_focused) {
+        if (event->kind == CUI_INPUT_KEY && event->key > 0 && event->key < CUI_KEY_COUNT && event->down)
+            ui->component_input.blocked_keys[event->key] = true;
+        return;
+    }
+    bool handled = route && route(ui, user, event);
+    if (event->kind == CUI_INPUT_KEY) {
+        bool valid = event->key > 0 && event->key < CUI_KEY_COUNT;
+        if (handled && valid && event->down) ui->component_input.blocked_keys[event->key] = true;
+        if (!handled && (!valid || !ui->component_input.blocked_keys[event->key])) {
+            cui__key_action(ui, event);
+            cui__keyboard_tab(ui, ui->component_input.previous_tab_owner);
+        }
+    } else if (!handled && event->kind == CUI_INPUT_TEXT) cui_input_text(ui, event->text);
+}
+
 /** Track focus independently from whether a popup covers keyboard input. */
 cui_interact cui__interact(cui_ctx *ui, cui_id id, int flags) {
     cui_interact r;
@@ -704,9 +835,9 @@ cui_interact cui__interact(cui_ctx *ui, cui_id id, int flags) {
     }
     if (flags & CUI_IF_FOCUSABLE) {
         CUI__GROW(ui, ui->focus_order, ui->focus_count, ui->focus_cap, 1);
-        CUI__GROW(ui, ui->focus_layers, ui->focus_count, ui->focus_layers_cap, 1);
-        ui->focus_layers[ui->focus_count] = ui->current_layer;
-        ui->focus_order[ui->focus_count++] = id;
+        ui->focus_order[ui->focus_count++] = (cui_focus_entry){
+            .id = id, .layer = ui->current_layer, .component_input = (flags & CUI_IF_COMPONENT_INPUT) != 0
+        };
         if (ui->focus_next_request == id) { ui->focus = id; ui->focus_next_request = 0; }
     }
     bool hovered = ui->hot == id && (ui->active == 0 || ui->active == id);
@@ -725,6 +856,7 @@ cui_interact cui__interact(cui_ctx *ui, cui_id id, int flags) {
         if (hovered) r.clicked = true;
     }
     r.focused = ui->focus == id;
+    if (r.focused && (flags & CUI_IF_COMPONENT_INPUT)) ui->component_input.focus_owner = id;
     /* a click gives focus without a ring; using the keyboard next shows the
      * ring and the keys act on that control, as in a browser. A trigger whose
      * popup is open leaves the keys to the popup. */
@@ -834,10 +966,8 @@ void cui_begin_frame(cui_ctx *ui, float dt) {
     { cui_hit *t = ui->prev_hits; ui->prev_hits = ui->hits; ui->hits = t;
       int c = ui->prev_hit_cap; ui->prev_hit_cap = ui->hit_cap; ui->hit_cap = c;
       ui->prev_hit_count = ui->hit_count; ui->hit_count = 0; }
-    { cui_id *t = ui->prev_focus_order; ui->prev_focus_order = ui->focus_order; ui->focus_order = t;
+    { cui_focus_entry *t = ui->prev_focus_order; ui->prev_focus_order = ui->focus_order; ui->focus_order = t;
       int c = ui->prev_focus_cap; ui->prev_focus_cap = ui->focus_cap; ui->focus_cap = c;
-      cui_id *tl = ui->prev_focus_layers; ui->prev_focus_layers = ui->focus_layers; ui->focus_layers = tl;
-      int cl = ui->prev_focus_layers_cap; ui->prev_focus_layers_cap = ui->focus_layers_cap; ui->focus_layers_cap = cl;
       ui->prev_focus_count = ui->focus_count; ui->focus_count = 0; }
     ui->prev_modal_layer = ui->modal_layer;
     ui->modal_layer = 0;
@@ -848,24 +978,9 @@ void cui_begin_frame(cui_ctx *ui, float dt) {
 
     /* Tab navigation (uses last frame's focus order; stays inside an open modal).
      * Ctrl+Tab is left to the app: it switches documents, as in a browser. */
-    bool tab_kept = ui->tab_owner && ui->tab_owner == ui->focus;   /* a code editor types the Tab */
+    ui->component_input.previous_tab_owner = ui->tab_owner;
+    cui__keyboard_tab(ui, ui->tab_owner);
     ui->tab_owner = 0;
-    if (cui_key_pressed(ui, CUI_KEY_TAB) && !(ui->mods & CUI_MOD_CTRL) && ui->prev_focus_count > 0 && !tab_kept) {
-        int n = 0, cur = -1;
-        cui_id *cand = cui__frame_alloc(ui, sizeof(cui_id) * (size_t)ui->prev_focus_count);
-        for (int i = 0; i < ui->prev_focus_count; i++) {
-            if (ui->prev_modal_layer && ui->prev_focus_layers[i] != ui->prev_modal_layer) continue;
-            if (ui->prev_focus_order[i] == ui->focus) cur = n;
-            cand[n++] = ui->prev_focus_order[i];
-        }
-        if (n > 0) {
-            int dir = (ui->mods & CUI_MOD_SHIFT) ? -1 : 1;
-            int idx = cur < 0 ? (dir > 0 ? 0 : n - 1) : (cur + dir + n) % n;
-            ui->focus = cand[idx];
-            ui->focus_visible = true;
-        }
-        ui->kpressed[CUI_KEY_TAB] = 0;
-    }
     if (ui->mpressed[0] && ui->hot == 0) { ui->focus = 0; }
 
     cui__theme_update(ui);
@@ -938,6 +1053,25 @@ void cui_end_frame(cui_ctx *ui) {
     dd->height_px = (int)(ui->vh * ui->scale + 0.5f);
     dd->clear_color = ui->theme.colors[CUI_TOKEN_BACKGROUND];
     dd->font_atlas = ui->atlas_tex;
+    cui_id owner = ui->component_input.focus_owner;
+    cui_id request = ui->component_input.focus_request;
+    if (owner || request) {
+        bool owner_present = false, request_present = false;
+        for (int i = 0; i < ui->focus_count; i++) {
+            const cui_focus_entry *entry = &ui->focus_order[i];
+            if (!entry->component_input) continue;
+            if (entry->id == owner) owner_present = true;
+            if (entry->id == request) request_present = true;
+        }
+        if (!owner_present && ui->focus == owner) ui->focus = 0;
+        if (request_present) {
+            if (ui->focus != request) cui_request_redraw(ui);
+            ui->focus = request;
+            owner = request;
+        }
+        ui->component_input.focus_owner = ui->focus == owner ? owner : 0;
+        ui->component_input.focus_request = 0;
+    }
     ui->in_frame = false;
 }
 

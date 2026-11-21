@@ -258,6 +258,53 @@ typedef enum cui_cursor {
     CUI_CURSOR_RESIZE_NS, CUI_CURSOR_MOVE, CUI_CURSOR_NOT_ALLOWED, CUI_CURSOR_COUNT
 } cui_cursor;
 
+/* Optional application-owned input capture, before legacy aggregation.
+ * Runs synchronously on the UI thread. Event and text storage are borrowed
+ * only during the callback. true consumes the event; false preserves the
+ * existing widget behavior. No UI construction or input injection is allowed
+ * inside the callback. Copy retained text. Unregister before freeing user.
+ * To replay captured input, unregister, call the existing cui_input_* entry
+ * points, then register again. Legacy replay retains existing text-size limits.
+ * The caller owns queue limits and error policy.
+ * Key events preserve each call, including repeated down and modifier-only
+ * CUI_KEY_NONE events. File drops are not intercepted by this interface. */
+typedef enum cui_input_event_kind {
+    CUI_INPUT_MOUSE_MOVE, CUI_INPUT_MOUSE_BUTTON, CUI_INPUT_MOUSE_LEAVE,
+    CUI_INPUT_SCROLL, CUI_INPUT_KEY, CUI_INPUT_TEXT, CUI_INPUT_FOCUS
+} cui_input_event_kind;
+typedef struct cui_input_event {
+    cui_input_event_kind kind;
+    cui_vec2 position;          /* mouse move only */
+    cui_vec2 delta;             /* scroll only, same units as cui_input_scroll */
+    cui_mouse_button button;   /* mouse button only */
+    cui_key key;               /* key only */
+    int mods;                  /* key only; track modifier-only events too */
+    bool down;                 /* key/button only */
+    bool focused;              /* window focus only */
+    const char *text;          /* text only; NUL terminated, borrowed */
+} cui_input_event;
+typedef bool (*cui_input_hook_fn)(cui_ctx *ui, const cui_input_event *event, void *user);
+/* NULL unregisters. Install before input delivery; do not change inside hook. */
+CUI_API void cui_set_input_hook(cui_ctx *ui, cui_input_hook_fn hook, void *user);
+
+/* Dispatch one captured KEY, TEXT or FOCUS event after begin_frame and before
+ * component submission. Unregister capture while dispatching. Physical key and
+ * modifier state updates before route; true stops actions, not bookkeeping.
+ * False permits CUI defaults, including Tab traversal after refusal. A handled
+ * down cannot drive default held actions until release. Inactive input updates
+ * physical state only; FOCUS still calls route for lifecycle notification.
+ * Route and text are borrowed synchronously. Do not construct UI, recurse,
+ * inject input, or change the hook inside route. The host owns command types,
+ * key maps, fallback scopes, queueing and any required reconciliation passes.
+ * A handled key does not suppress separately delivered committed text.
+ * Existing input entry points keep their legacy behavior for opt-out callers. */
+typedef bool (*cui_input_route_fn)(cui_ctx *ui, void *user, const cui_input_event *event);
+CUI_API void cui_dispatch_input(cui_ctx *ui, const cui_input_event *event, cui_input_route_fn route, void *user);
+/* Valid inside route: whether this key-down repeats a physical held key. */
+CUI_API bool cui_input_repeated(cui_ctx *ui);
+/* Held state eligible for default actions. cui_key_down remains physical state. */
+CUI_API bool cui_key_action_down(cui_ctx *ui, cui_key key);
+
 CUI_API void cui_input_mouse_move(cui_ctx *ui, float x, float y);
 CUI_API void cui_input_mouse_button(cui_ctx *ui, cui_mouse_button button, bool down);
 CUI_API void cui_input_mouse_leave(cui_ctx *ui);
@@ -286,6 +333,10 @@ typedef struct cui_platform_iface {
     bool (*draw_emoji)(void *user, const char *utf8, int len, int px, unsigned char *rgba);
 } cui_platform_iface;
 CUI_API void cui_set_platform(cui_ctx *ui, const cui_platform_iface *platform);
+/* Request a cursor during component submission or painting. The last request
+ * wins. At end of frame the platform hook receives it; the next frame starts
+ * with CUI_CURSOR_ARROW. */
+CUI_API void cui_set_cursor(cui_ctx *ui, cui_cursor cursor);
 CUI_API cui_cursor cui_get_cursor(cui_ctx *ui);
 /* The system clipboard, for a menu or status bar item that copies or pastes ("Copy path").
  * They go through the platform's clipboard hooks, as the copy button and text fields do:
@@ -5000,6 +5051,27 @@ CUI_API void cui_pop_clip(cui_ctx *ui);
 typedef void (*cui_paint_fn)(cui_ctx *ui, cui_rect rect, void *user);
 typedef struct cui_canvas_result { cui_rect rect; bool hovered, pressed, clicked; cui_vec2 mouse; } cui_canvas_result;
 CUI_API cui_canvas_result cui_canvas(cui_ctx *ui, const char *id, cui_size width, cui_size height, cui_paint_fn paint, const void *user, size_t user_size);
+/* A zeroed options struct gives the same behavior as cui_canvas. */
+typedef struct cui_canvas_opts {
+    bool focusable;       /* Tab stop; with keyboard focus Enter or Space clicks it */
+    bool component_input; /* requires focusable; the host routes keys instead of button activation */
+} cui_canvas_opts;
+CUI_API cui_canvas_result cui_canvas_ex(cui_ctx *ui, const char *id, cui_size width, cui_size height, cui_paint_fn paint, const void *user, size_t user_size, const cui_canvas_opts *opts);
+/* Request focus for a submitted canvas with component_input enabled. The last
+ * request wins at end_frame and expires there. An absent, disabled, or
+ * nonparticipating target leaves the current focus unchanged. Removal revokes
+ * participating focus; built-in forward-focus behavior is unchanged. */
+CUI_API void cui_request_component_focus(cui_ctx *ui, cui_id id);
+/* Test eligibility from a completed submission: call after end_frame or before
+ * submitting components in the next frame. Includes window, modal and popup
+ * exclusion. Unsubmitted host visibility/disabled changes remain host-owned. */
+CUI_API bool cui_component_has_input(cui_ctx *ui, cui_id id);
+/* Current owner, including built-ins. Ownership alone does not imply eligibility. */
+CUI_API cui_id cui_focused_id(cui_ctx *ui);
+CUI_API bool cui_window_focused(cui_ctx *ui);
+
+/* Whether `id` has keyboard focus with its ring showing; for a painter. */
+CUI_API bool cui_focus_visible(cui_ctx *ui, cui_id id);
 
 /* Marks the part of a canvas that takes the wheel, for a canvas that zooms,
  * pans or scrolls what it draws the way the built-in charts, graphs and
