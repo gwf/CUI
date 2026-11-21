@@ -86,6 +86,7 @@ bool cui__popup_begin(cui_ctx *ui, cui_id id, cui_id anchor, int placement, floa
     cui_popup *p = cui__popup_get(ui, id, false);
     if (!p) return false;
     p->last_frame = ui->frame;
+    p->parent_layer = ui->current_layer;
     if (p->open) {
         bool top = cui__popup_is_topmost(ui, p);
         if (top && cui_key_pressed(ui, CUI_KEY_ESCAPE)) { p->open = false; ui->kpressed[CUI_KEY_ESCAPE] = 0; }

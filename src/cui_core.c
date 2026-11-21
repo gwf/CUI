@@ -810,6 +810,17 @@ float cui_animate_spring(cui_ctx *ui, cui_id id, float target, float duration, f
 /* ------------------------------------------------------------------------ */
 
 /** Advance timers by elapsed time and cap only the animation step after idle. */
+/* A popup has its own layer but stays in the Tab scope of its modal. */
+static bool cui__tab_layer_in_modal(cui_ctx *ui, cui_id layer, cui_id modal) {
+    for (int depth = 0; depth <= ui->popup_count; depth++) {
+        if (layer == modal) return true;
+        cui_popup *popup = cui__popup_get(ui, layer, false);
+        if (!popup || !popup->open) return false;
+        layer = popup->parent_layer;
+    }
+    return false;
+}
+
 void cui_begin_frame(cui_ctx *ui, float dt) {
     if (ui->in_frame) cui_end_frame(ui);
     if (!isfinite(dt) || dt < 0) dt = 0;
@@ -854,7 +865,7 @@ void cui_begin_frame(cui_ctx *ui, float dt) {
         int n = 0, cur = -1;
         cui_id *cand = cui__frame_alloc(ui, sizeof(cui_id) * (size_t)ui->prev_focus_count);
         for (int i = 0; i < ui->prev_focus_count; i++) {
-            if (ui->prev_modal_layer && ui->prev_focus_layers[i] != ui->prev_modal_layer) continue;
+            if (ui->prev_modal_layer && !cui__tab_layer_in_modal(ui, ui->prev_focus_layers[i], ui->prev_modal_layer)) continue;
             if (ui->prev_focus_order[i] == ui->focus) cur = n;
             cand[n++] = ui->prev_focus_order[i];
         }

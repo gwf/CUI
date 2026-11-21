@@ -3416,6 +3416,63 @@ static void test_focus_trap(void) {
     cui_destroy(ui);
 }
 
+typedef enum {
+    POPUP_FOCUS_NONE, POPUP_FOCUS_DIALOG, POPUP_FOCUS_PARENT,
+    POPUP_FOCUS_CHILD, POPUP_FOCUS_OUTSIDE
+} popup_focus_stop;
+typedef struct {
+    bool dialog_open, open_popovers, close_parent;
+    popup_focus_stop activated;
+} popup_focus_ctx;
+
+static void build_popup_focus_trap(cui_ctx *ui, void *user) {
+    popup_focus_ctx *t = user;
+    if (cui_button(ui, "Page")) t->activated = POPUP_FOCUS_OUTSIDE;
+    if (t->open_popovers) cui_popover_open(ui, "Page popover");
+    cui_popover(ui, "Page popover") {
+        if (cui_button(ui, "Outside modal")) t->activated = POPUP_FOCUS_OUTSIDE;
+    }
+    cui_dialog(ui, "Dialog", &t->dialog_open, .persistent = true, .no_close_button = true) {
+        if (cui_button(ui, "Dialog button")) t->activated = POPUP_FOCUS_DIALOG;
+        if (t->open_popovers) cui_popover_open(ui, "Parent popover");
+        if (t->close_parent) cui_popover_close(ui, "Parent popover");
+        cui_popover(ui, "Parent popover") {
+            if (cui_button(ui, "Parent button")) t->activated = POPUP_FOCUS_PARENT;
+            if (t->open_popovers) cui_popover_open(ui, "Child popover");
+            cui_popover(ui, "Child popover") {
+                if (cui_button(ui, "Child button")) t->activated = POPUP_FOCUS_CHILD;
+            }
+        }
+    }
+    t->open_popovers = false;
+}
+
+static void check_popup_focus(cui_ctx *ui, popup_focus_ctx *t, int mods, popup_focus_stop expected) {
+    key(ui, build_popup_focus_trap, t, CUI_KEY_TAB, mods);
+    t->activated = POPUP_FOCUS_NONE;
+    key(ui, build_popup_focus_trap, t, CUI_KEY_ENTER, 0);
+    CHECK(t->activated == expected);
+}
+
+static void test_modal_popup_focus_trap(void) {
+    printf("overlays: Tab reaches nested popovers inside the active modal\n");
+    cui_ctx *ui = new_ctx();
+    popup_focus_ctx t = { .dialog_open = true, .open_popovers = true };
+    run(ui, build_popup_focus_trap, &t, 1);
+
+    check_popup_focus(ui, &t, 0, POPUP_FOCUS_DIALOG);
+    check_popup_focus(ui, &t, 0, POPUP_FOCUS_PARENT);
+    check_popup_focus(ui, &t, 0, POPUP_FOCUS_CHILD);
+    check_popup_focus(ui, &t, 0, POPUP_FOCUS_DIALOG);
+    check_popup_focus(ui, &t, CUI_MOD_SHIFT, POPUP_FOCUS_CHILD);
+    check_popup_focus(ui, &t, CUI_MOD_SHIFT, POPUP_FOCUS_PARENT);
+
+    t.close_parent = true;
+    run(ui, build_popup_focus_trap, &t, 1);
+    check_popup_focus(ui, &t, 0, POPUP_FOCUS_DIALOG);
+    cui_destroy(ui);
+}
+
 typedef struct { char tags[128]; char otp[8]; int max_tags, otp_done, held; cui_id tag_id, otp_id, hold_id; } extras_ctx;
 
 /** Use the same controls for ordinary editing and batched input. */
@@ -9870,6 +9927,7 @@ int main(void) {
     test_dialog_resize_footer_and_window();
     test_menu();
     test_focus_trap();
+    test_modal_popup_focus_trap();
     test_tag_limit_batch();
     test_extras();
     test_toast_deadline();

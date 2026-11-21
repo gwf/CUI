@@ -439,6 +439,7 @@ bool cui__is_layer_open(cui_ctx *ui, cui_id layer);
 /* ---- popups ---- */
 typedef struct cui_popup {
     cui_id id;
+    cui_id parent_layer;       /* layer that submitted the popup */
     cui_id anchor;
     cui_rect anchor_rect;
     bool open;
